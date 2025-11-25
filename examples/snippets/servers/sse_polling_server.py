@@ -24,7 +24,6 @@ from typing import Any
 
 import anyio
 from starlette.applications import Starlette
-from starlette.requests import Request
 from starlette.routing import Mount
 from starlette.types import Receive, Scope, Send
 
@@ -89,9 +88,6 @@ def create_app() -> Starlette:
     """Create the Starlette application with SSE polling example server."""
     app = Server("sse-polling-example")
 
-    # Store reference to session manager for close_sse_stream access
-    session_manager_ref: list[StreamableHTTPSessionManager] = []
-
     @app.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[types.ContentBlock]:
         if name != "long-task":
@@ -121,15 +117,11 @@ def create_app() -> Starlette:
         await anyio.sleep(1)
 
         # Server-initiated disconnect - client will reconnect
-        if session_manager_ref:
+        # Use the close_sse_stream callback if available
+        # This is None if not on streamable HTTP transport or no event store configured
+        if ctx.close_sse_stream:
             logger.info(f"[{request_id}] Closing SSE stream to trigger polling reconnect...")
-            session_manager = session_manager_ref[0]
-            # Get session ID from the request and close the stream via public API
-            request = ctx.request
-            if isinstance(request, Request):
-                session_id = request.headers.get("mcp-session-id")
-                if session_id:
-                    await session_manager.close_sse_stream(session_id, request_id)
+            await ctx.close_sse_stream(retry_interval=2000)  # 2 seconds
 
         # Wait a bit for client to reconnect
         await anyio.sleep(0.5)
@@ -175,7 +167,6 @@ def create_app() -> Starlette:
         # Tell clients to reconnect after 2 seconds
         retry_interval=2000,
     )
-    session_manager_ref.append(session_manager)
 
     async def handle_mcp(scope: Scope, receive: Receive, send: Send) -> None:
         await session_manager.handle_request(scope, receive, send)

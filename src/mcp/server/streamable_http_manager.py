@@ -282,7 +282,7 @@ class StreamableHTTPSessionManager:
             await response(scope, receive, send)
 
     async def close_sse_stream(  # pragma: no cover
-        self, session_id: str, request_id: str | int
+        self, session_id: str, request_id: str | int, retry_interval: int | None = None
     ) -> bool:
         """Close an SSE stream for a specific request, triggering client reconnection.
 
@@ -292,6 +292,8 @@ class StreamableHTTPSessionManager:
         Args:
             session_id: The MCP session ID (from mcp-session-id header)
             request_id: The request ID of the stream to close
+            retry_interval: Optional retry interval in ms to send before closing.
+                           If provided, overrides the transport's default retry interval.
 
         Returns:
             True if the stream was found and closed, False otherwise
@@ -299,5 +301,4 @@ class StreamableHTTPSessionManager:
         if session_id not in self._server_instances:
             return False
         transport = self._server_instances[session_id]
-        await transport.close_sse_stream(request_id)
-        return True
+        return await transport.close_sse_stream(request_id, retry_interval)

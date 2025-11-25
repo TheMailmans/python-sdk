@@ -36,7 +36,6 @@ from mcp.types import (
     TextResourceContents,
 )
 from pydantic import AnyUrl, BaseModel, Field
-from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
 
@@ -315,13 +314,11 @@ async def test_reconnection(ctx: Context[ServerSession, None]) -> str:
     # Send notification before disconnect
     await ctx.info("Notification before disconnect")
 
-    # Get session_id from request headers
-    request = ctx.request_context.request
-    if isinstance(request, Request):
-        session_id = request.headers.get("mcp-session-id")
-        if session_id:
-            # Trigger server-initiated SSE disconnect
-            await mcp.session_manager.close_sse_stream(session_id, ctx.request_id)
+    # Use the close_sse_stream callback if available
+    # This is None if not on streamable HTTP transport or no event store configured
+    if ctx.close_sse_stream:
+        # Trigger server-initiated SSE disconnect with optional retry interval
+        await ctx.close_sse_stream(retry_interval=3000)  # 3 seconds
 
     # Wait for client to reconnect
     await asyncio.sleep(0.2)

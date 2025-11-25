@@ -64,7 +64,7 @@ from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http import EventStore
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.shared.context import LifespanContextT, RequestContext, RequestT
+from mcp.shared.context import CloseSSEStreamCallback, LifespanContextT, RequestContext, RequestT
 from mcp.types import Annotations, AnyFunction, ContentBlock, GetPromptResult, Icon, ToolAnnotations
 from mcp.types import Prompt as MCPPrompt
 from mcp.types import PromptArgument as MCPPromptArgument
@@ -1286,6 +1286,23 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT, RequestT]):
     def session(self):
         """Access to the underlying session for advanced usage."""
         return self.request_context.session
+
+    @property
+    def close_sse_stream(self) -> CloseSSEStreamCallback | None:
+        """Callback to close SSE stream for polling behavior (SEP-1699).
+
+        This allows tools to trigger server-initiated SSE disconnect during
+        long-running operations, enabling client reconnection with polling.
+
+        Returns None if:
+        - Not running on streamable HTTP transport
+        - No event store configured (events would be lost)
+
+        Usage:
+            if ctx.close_sse_stream:
+                await ctx.close_sse_stream(retry_interval=3000)  # Reconnect after 3s
+        """
+        return self.request_context.close_sse_stream
 
     # Convenience methods for common log levels
     async def debug(self, message: str, **extra: Any) -> None:

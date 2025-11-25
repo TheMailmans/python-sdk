@@ -28,6 +28,7 @@ from mcp.server.transport_security import (
     TransportSecurityMiddleware,
     TransportSecuritySettings,
 )
+from mcp.shared.context import CloseSSEStreamCallback
 from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.shared.version import SUPPORTED_PROTOCOL_VERSIONS
 from mcp.types import (
@@ -282,6 +283,26 @@ class StreamableHTTPServerTransport:
             event_data["retry"] = self._retry_interval
 
         return event_data
+
+    def _create_close_sse_stream_callback(self, request_id: RequestId) -> CloseSSEStreamCallback | None:
+        """Create a bound callback for closing SSE streams.
+
+        Args:
+            request_id: The request ID to bind to the callback
+
+        Returns:
+            A callback that closes the SSE stream for this request,
+            or None if no event store is configured (events would be lost).
+        """
+        # Only provide callback if event store is configured
+        # Without an event store, closing the stream would lose events
+        if self._event_store is None:
+            return None
+
+        async def callback(retry_interval: int | None = None) -> bool:
+            return await self.close_sse_stream(request_id, retry_interval)
+
+        return callback
 
     async def _clean_up_memory_streams(self, request_id: RequestId) -> None:  # pragma: no cover
         """Clean up memory streams for a given request ID."""
@@ -544,7 +565,12 @@ class StreamableHTTPServerTransport:
                     async with anyio.create_task_group() as tg:
                         tg.start_soon(response, scope, receive, send)
                         # Then send the message to be processed by the server
-                        metadata = ServerMessageMetadata(request_context=request)
+                        # Create callback for closing SSE stream (only if event store configured)
+                        close_callback = self._create_close_sse_stream_callback(request_id)
+                        metadata = ServerMessageMetadata(
+                            request_context=request,
+                            close_sse_stream=close_callback,
+                        )
                         session_message = SessionMessage(message, metadata=metadata)
                         await writer.send(session_message)
                 except Exception:
@@ -716,7 +742,7 @@ class StreamableHTTPServerTransport:
             # During cleanup, we catch all exceptions since streams might be in various states
             logger.debug(f"Error closing streams: {e}")
 
-    async def close_sse_stream(self, request_id: RequestId) -> None:
+    async def close_sse_stream(self, request_id: RequestId, retry_interval: int | None = None) -> bool:
         """Close an SSE stream for a specific request, triggering client reconnection.
 
         Use this to implement polling behavior during long-running operations -
@@ -724,18 +750,27 @@ class StreamableHTTPServerTransport:
 
         Args:
             request_id: The request ID (or stream key) of the stream to close
+            retry_interval: Optional retry interval in ms to send before closing.
+                           If provided, overrides the transport's default retry interval.
+
+        Returns:
+            True if the stream was found and closed, False otherwise.
         """
         request_id_str = str(request_id)
-        if request_id_str in self._request_streams:
-            try:
-                sender, receiver = self._request_streams[request_id_str]
-                await sender.aclose()
-                await receiver.aclose()
-            except Exception:  # pragma: no cover
-                # Stream might already be closed
-                logger.debug(f"Error closing SSE stream {request_id_str} - may already be closed")
-            finally:
-                self._request_streams.pop(request_id_str, None)
+        if request_id_str not in self._request_streams:
+            return False
+
+        try:
+            sender, receiver = self._request_streams[request_id_str]
+            await sender.aclose()
+            await receiver.aclose()
+            return True
+        except Exception:  # pragma: no cover
+            # Stream might already be closed
+            logger.debug(f"Error closing SSE stream {request_id_str} - may already be closed")
+            return False
+        finally:
+            self._request_streams.pop(request_id_str, None)
 
     async def _handle_unsupported_request(self, request: Request, send: Send) -> None:  # pragma: no cover
         """Handle unsupported HTTP methods."""
